@@ -301,45 +301,5 @@ Xem chi tiết tại tệp **[AI-USAGE.md](AI-USAGE.md)**.
 
 > **Tóm tắt:** Trong dự án này, ứng viên sử dụng Claude và Trợ lý lập trình AI như một cộng sự (pair programmer) để tăng tốc độ hiện thực, trong khi ứng viên giữ vai trò Kiến trúc sư trưởng (Lead Architect): tự tay thiết lập 6 bất biến cốt lõi, xác định mô hình dữ liệu, phân loại ngoại lệ mạng, kiểm toán chất lượng code, trực tiếp sửa các lỗi phát sinh (Windows `.exe`, trùng cờ CLI), và xây dựng các kịch bản kiểm thử tự động toàn trình.
 
----
-
-## 7. Câu Hỏi Phỏng Vấn Kỹ Thuật (Architecture & Design Q&A)
-
-### Q1: Vì sao dùng `version` thay vì thời gian nhận (timestamp) để phân biệt mới/cũ?
-> **Trả lời:**
-> Thời gian nhận (clock / receive timestamp) không đáng tin cậy vì:
-> 1. Đồng hồ giữa các máy chủ có thể bị lệch (clock skew).
-> 2. Gói tin mạng có thể bị trễ, dẫn đến bản ghi cũ lại đến sau bản ghi mới.
-> 3. Khi retry hoặc phát lại feed cũ, timestamp nhận sẽ là thời điểm hiện tại, nếu căn cứ vào đó sẽ ghi đè phá hủy dữ liệu mới.
-> Ngược lại, `version` do nhà cung cấp cấp phát đơn điệu tăng dần tại nguồn cho từng sản phẩm. Đây là nguồn chân lý duy nhất (Single Source of Truth), giúp hệ thống miễn nhiễm hoàn toàn với thứ tự truyền tải của mạng.
-
-### Q2: Vì sao `next_cursor` và dữ liệu sản phẩm trong batch phải commit cùng một Transaction?
-> **Trả lời:**
-> - Nếu lưu cursor trước rồi mới lưu sản phẩm: Lỡ server bị sập nguồn ngay sau khi lưu cursor, cursor đã nhảy sang trang sau nhưng dữ liệu trang này chưa có $\rightarrow$ **Mất dữ liệu vĩnh viễn**.
-> - Nếu lưu sản phẩm trước rồi mới lưu cursor: Lỡ server chết trước khi kịp lưu cursor, khi khởi động lại app sẽ đọc lại trang đó $\rightarrow$ **Các bộ đếm (counters) bị cộng đúp 2 lần**.
-> Do đó, bắt buộc phải đưa việc lưu sản phẩm, nhật ký thay đổi, và `next_cursor` vào chung **MỘT Transaction duy nhất**. Hoặc là cùng thành công, hoặc cùng rollback về trạng thái trước đó.
-
-### Q3: Vì sao sản phẩm bị ngừng bán (`withdrawn`) lại lưu dạng Tombstone mà không xóa hẳn dòng?
-> **Trả lời:**
-> 1. Nếu xóa hẳn dòng khỏi database: Giả sử một bản tin cũ chứa sản phẩm đó với trạng thái `active` đến muộn (do gói tin mạng đến chậm hoặc replay feed cũ). Khi hệ thống kiểm tra database không thấy sản phẩm đâu, sẽ tưởng đây là sản phẩm mới và tạo lại $\rightarrow$ vi phạm bất biến 3 (làm sống lại sản phẩm đã ngừng bán). Tombstone lưu giữ lại số version cao nhất lúc bị withdraw để chặn đứng mọi dữ liệu cũ hơn.
-> 2. Ngoài ra, supplier trả dữ liệu theo từng batch; sản phẩm không có mặt trong một batch không đồng nghĩa với việc nó đã ngừng bán. Không bao giờ được phép xóa dữ liệu chỉ vì sự vắng mặt.
-
-### Q4: Điều gì xảy ra nếu ứng dụng chết ngay trước hoặc ngay sau khi commit transaction?
-> **Trả lời:**
-> - **Nếu chết ngay trước commit:** Nhờ cơ chế SQLite WAL, transaction chưa commit sẽ tự động bị hủy bỏ (rollback sạch sẽ). Database giữ nguyên trạng thái của batch trước đó. Khi mở lại app và bấm `resume`, app lấy lại cursor cũ và xử lý lại batch này mà không gây sai lệch (nhờ hàm merge có tính lũy đẳng).
-> - **Nếu chết ngay sau commit:** Dữ liệu và cursor mới đã được ghi bền vững xuống đĩa vật lý nhờ cấu hình `PRAGMA synchronous = FULL`. Khi mở lại app và bấm `resume`, app sẽ lấy cursor mới và chạy tiếp batch tiếp theo.
-
-### Q5: Vì sao trạng thái `completed` phải được ghi chung transaction với batch cuối cùng?
-> **Trả lời:**
-> Nếu batch cuối commit thành công, nhưng lệnh ghi trạng thái `completed` lại chạy ở một câu lệnh SQL tách rời sau đó: nếu app bị ngắt nguồn ngay giữa hai câu lệnh này, dữ liệu thực tế đã nạp 100% nhưng trạng thái trong database vẫn ghi là `running` hoặc `interrupted`.
-> Ghi trạng thái `completed` cùng transaction với batch cuối cùng đảm bảo Invariant 6: **Một khi batch cuối đã vào đĩa thì run chắc chắn là completed, không bao giờ có độ trễ hay trạng thái nửa vời.**
-
-### Q6: Làm thế nào để ngăn chặn 2 tiến trình đồng thời cùng chạy một lúc?
-> **Trả lời:**
-> Ngoài việc cấu hình `db.SetMaxOpenConns(1)` ở tầng ứng dụng, hệ thống thiết lập một lớp bảo vệ vững chắc ở tầng cơ sở dữ liệu bằng **Partial Unique Index**:
-> ```sql
-> CREATE UNIQUE INDEX idx_single_running_run ON update_runs(status) WHERE status = 'running';
-> ```
-> Bất kỳ lúc nào có một tiến trình cố tình chèn hoặc cập nhật một run thứ hai về trạng thái `running`, SQLite sẽ ném lỗi vi phạm ràng buộc duy nhất (Unique Constraint Violation) và chặn đứng tiến trình đó ngay lập tức.
 
 
