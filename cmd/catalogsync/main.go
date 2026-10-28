@@ -309,24 +309,22 @@ func handleProducts(ctx context.Context, st *store.Store, args []string) {
 func handleProblems(ctx context.Context, st *store.Store, args []string) {
 	fs := flag.NewFlagSet("problems", flag.ExitOnError)
 	runID := fs.String("run", "", "Filter problems by run ID")
-	all := fs.String("all", "false", "Show all problems (default false shows only unresolved)")
-	showAllBool := false
-	fs.BoolVar(&showAllBool, "all", false, "Show all problems including resolved")
+	showAll := fs.Bool("all", false, "Show all problems including resolved")
 	_ = fs.Parse(args)
 
 	filter := model.ProblemFilter{
 		RunID:          *runID,
-		UnresolvedOnly: !showAllBool && *all != "true",
+		UnresolvedOnly: !*showAll,
 	}
 
 	problems, err := st.ListProblems(ctx, filter)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to list problems: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to load problems: %v\n", err)
 		os.Exit(1)
 	}
 
 	header := "Unresolved Problems"
-	if showAllBool {
+	if *showAll {
 		header = "All Problems"
 	}
 	fmt.Printf("%s (%d):\n", header, len(problems))
